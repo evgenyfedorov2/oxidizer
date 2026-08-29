@@ -10,6 +10,7 @@ use crate::Event;
 use crate::interop::DynEvent;
 use crate::metadata::{EventDescription, SourceLocation};
 use crate::processing::FieldVisitorFn;
+use crate::sampling::EventMetadata;
 
 /// An intermediate event state that can be either a lazy typed event or a pre-constructed dynamic
 /// event reference.
@@ -44,6 +45,19 @@ impl<'a, T: Event, F: FnOnce() -> T> IntermediateEvent<'a, F> {
         match self.inner {
             Inner::NotEvaluated(..) => T::DESCRIPTION,
             Inner::Dyn(event) => event.description(),
+        }
+    }
+
+    /// Builds [`EventMetadata`] for an
+    /// [`EarlySampler`](crate::sampling::EarlySampler) before event
+    /// construction.
+    ///
+    /// For a typed event, this uses the captured [`SourceLocation`].
+    /// For a dynamic event, this keeps a reference to the [`DynEvent`].
+    pub(crate) fn metadata(&self, description: EventDescription) -> EventMetadata<'a> {
+        match self.inner {
+            Inner::NotEvaluated(_, source_location) => EventMetadata::typed(description, source_location),
+            Inner::Dyn(event) => EventMetadata::dynamic(description, event),
         }
     }
 

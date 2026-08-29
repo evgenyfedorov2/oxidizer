@@ -195,6 +195,7 @@ Rust services and libraries need structured telemetry that is:
 A **Sink** is a composable event dispatcher identified by a `SinkId`. It is the unit of telemetry configuration - each sink owns:
 
 - One or more **processors** (`EventProcessor`), each targeting one destination and owning its own `RedactionEngine` and any OTel providers it needs.
+- An optional **early sampler**, which can reject an event emitted directly through the sink after static interest accepts it but before typed construction.
 - A **clock**, used to stamp every event it dispatches.
 - An **enrichment slot** plus an **enrichment isolation** flag.
 
@@ -296,6 +297,10 @@ A **Sink** is a composable event dispatcher identified by a `SinkId`. It is the 
   to send telemetry to multiple destinations simultaneously (e.g. stdout for development, ETW for production, an in-memory buffer for testing).
   Each processor owns its own `RedactionEngine`, so the same value can be redacted differently per destination.
 
+- **Early sampler** - a non-composite sink may carry one `EarlySampler`.
+  Direct emission through that sink calls the sampler after static interest
+  and before typed construction.
+
 - **Clock** - the `tick::SimpleClock` used to stamp dispatched events. All processors on one leaf see the same instant, and a frozen clock keeps
   tests deterministic.
 
@@ -317,6 +322,7 @@ rather than silently repairing it. A composite has no identity of its own
 Sink (identified by SinkId)
 ├─ enrichment slot + isolation flag
 ├─ clock
+├─ optional EarlySampler
 ├─ EventProcessor #1  (owns its RedactionEngine and any OTel providers)
 ├─ EventProcessor #2  (same, different destination)
 └─ ...

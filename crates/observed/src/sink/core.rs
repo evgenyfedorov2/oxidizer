@@ -13,6 +13,7 @@ use crate::enrichment::{EnrichmentEntry, EnrichmentTransfer, Guard, Slot};
 use crate::interop::DynEvent;
 use crate::metadata::{EventDescription, SourceLocation};
 use crate::processing::{EventProcessor, EventView, IntermediateEvent};
+use crate::sampling::{EarlySampler, EarlySamplingDecision, SamplingId};
 use crate::{Event, FlushError, SinkFlushError, SinkId};
 
 /// The no-op sink's id returned by [`Sink::noop`]'s `id()` accessor
@@ -55,6 +56,7 @@ impl std::fmt::Debug for Sink {
                 .field("variant", &"Single")
                 .field("id", &state.id)
                 .field("processors", &state.processors.len())
+                .field("early_sampler", &state.early_sampler.is_some())
                 .field("isolated_enrichment", &state.isolated_enrichment)
                 .finish(),
             SinkInner::Composite { children } => f
@@ -115,8 +117,66 @@ impl Sink {
                 isolated_enrichment,
                 enrichment: Slot::new(),
                 clock: clock.as_ref().clone(),
+                early_sampler: None,
             })),
         }
+    }
+
+    /// Attaches an [`EarlySampler`] to this non-composite sink.
+    ///
+    /// This method consumes the sink and returns the configured sink. Calling
+    /// it again replaces the previous sampler. Only the last sampler runs.
+    ///
+    /// The sampler is stored on the sink's `SingleSinkState`, so cloning this
+    /// sink preserves the sampler.
+    ///
+    /// Emitting through a [`Sink::composite`] does not yet call the samplers
+    /// of its child sinks. Emit through a child sink directly when early
+    /// sampling is required.
+    ///
+    /// This method is valid on a sink with zero processors. Such a sink is
+    /// [`is_noop`](Self::is_noop), so [`Sink::emit`](Self::emit) never
+    /// consults the sampler - there is no processor left for it to gate.
+    ///
+    /// This method returns a [`Sink::composite`] or dedicated [`Sink::noop()`]
+    /// sink unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// use observed::Sink;
+    /// use observed::sampling::{EarlySampler, EarlySamplingDecision, EventMetadata};
+    ///
+    /// struct AlwaysContinue;
+    ///
+    /// impl EarlySampler for AlwaysContinue {
+    ///     fn sample(&self, _event: &EventMetadata<'_>) -> EarlySamplingDecision {
+    ///         EarlySamplingDecision::Continue
+    ///     }
+    /// }
+    ///
+    /// let sink = Sink::new("svc", Vec::new(), tick::SimpleClock::new_system())
+    ///     .with_early_sampler(Arc::new(AlwaysContinue));
+    /// ```
+    ///
+    /// This minimal snippet demonstrates attachment only. Because the sink has
+    /// no processors, emission stops at the static-interest check and does not
+    /// call the sampler.
+    #[must_use]
+    pub fn with_early_sampler(self, sampler: Arc<dyn EarlySampler>) -> Self {
+        if let SinkInner::Single(state) = &*self.inner {
+            let state = SingleSinkState {
+                early_sampler: Some(sampler),
+                ..state.clone()
+            };
+            return Self {
+                inner: thread_aware::Arc::from_unaware(SinkInner::Single(state)),
+            };
+        }
+
+        self
     }
 
     /// Creates a **composite** sink that dispatches every event through
@@ -316,6 +376,15 @@ impl Sink {
             return;
         }
 
+        let sampling_id = match &*self.inner {
+            SinkInner::Single(single) => match single.sample_early(&state, description) {
+                EarlySamplingDecision::Drop => return,
+                EarlySamplingDecision::Continue => None,
+                EarlySamplingDecision::ContinueWith(id) => Some(id),
+            },
+            SinkInner::Composite { .. } | SinkInner::Noop { .. } => None,
+        };
+
         // Build the event value BEFORE taking the reentrancy guard. `evaluate`
         // runs ordinary user code - a field initializer may call a helper that
         // legitimately emits telemetry of its own, often to an unrelated sink.
@@ -327,7 +396,7 @@ impl Sink {
             return;
         };
 
-        self.dispatch_to_processors(&event, &description);
+        self.dispatch_to_processors(&event, &description, sampling_id);
     }
 
     /// Returns `true` if at least one processor is interested in the event.
@@ -348,13 +417,15 @@ impl Sink {
     /// The reentrancy guard acquired in [`Sink::emit_impl`] is held across all
     /// sibling dispatches, so composites safely iterate children without the
     /// guard falsely tripping.
-    fn dispatch_to_processors(&self, event: &dyn DynEvent, description: &EventDescription) {
+    ///
+    /// `sampling_id` is the id from the sink's early decision.
+    fn dispatch_to_processors(&self, event: &dyn DynEvent, description: &EventDescription, sampling_id: Option<SamplingId>) {
         match &*self.inner {
-            SinkInner::Single(state) => state.dispatch(event, description),
+            SinkInner::Single(state) => state.dispatch(event, description, sampling_id),
             SinkInner::Composite { children } => {
                 for child in children {
                     if child.is_interested(description) {
-                        child.dispatch(event, description);
+                        child.dispatch(event, description, None);
                     }
                 }
             }
@@ -438,6 +509,7 @@ struct SingleSinkState {
     isolated_enrichment: bool,
     enrichment: Slot,
     clock: SimpleClock,
+    early_sampler: Option<Arc<dyn EarlySampler>>,
 }
 
 impl SingleSinkState {
@@ -446,13 +518,33 @@ impl SingleSinkState {
         self.processors.iter().any(|p| p.is_interested(description))
     }
 
+    /// Runs this sink's early sampler, if any, against pre-construction
+    /// metadata projected from `state`.
+    fn sample_early<T: Event, F: FnOnce() -> T>(
+        &self,
+        state: &IntermediateEvent<'_, F>,
+        description: EventDescription,
+    ) -> EarlySamplingDecision {
+        match &self.early_sampler {
+            Some(sampler) => sampler.sample(&state.metadata(description)),
+            None => EarlySamplingDecision::Continue,
+        }
+    }
+
     /// Builds an [`EventView`] rooted at this leaf's enrichment slot and
     /// hands it to every interested processor.
-    fn dispatch(&self, event: &dyn DynEvent, description: &EventDescription) {
+    fn dispatch(&self, event: &dyn DynEvent, description: &EventDescription, sampling_id: Option<SamplingId>) {
         // Reading the leaf's clock keeps timestamps off `SystemTime::now()`,
         // so frozen clocks make this Miri-safe.
         let timestamp = self.clock.system_time();
-        let view = EventView::new(event, self.enrichment.current(), self.isolated_enrichment, self.id, timestamp);
+        let view = EventView::new(
+            event,
+            self.enrichment.current(),
+            self.isolated_enrichment,
+            self.id,
+            timestamp,
+            sampling_id,
+        );
         for processor in self.processors.iter() {
             if processor.is_interested(description) {
                 processor.process(&view);
@@ -518,7 +610,7 @@ mod tests {
         let description = EventDescription::new("dummy", None, None, None, false, false);
 
         assert!(!noop.is_interested_in(&description));
-        noop.dispatch_to_processors(&DummyDyn, &description);
+        noop.dispatch_to_processors(&DummyDyn, &description, None);
         noop.flush().expect("noop flush should succeed");
     }
 
@@ -651,7 +743,7 @@ mod tests {
 
         let description = dummy_description();
         assert!(sink.is_interested_in(&description));
-        sink.dispatch_to_processors(&DummyDyn, &description);
+        sink.dispatch_to_processors(&DummyDyn, &description, None);
 
         assert_eq!(uninterested.processed.load(Ordering::Relaxed), 0);
         assert_eq!(interested.processed.load(Ordering::Relaxed), 1);

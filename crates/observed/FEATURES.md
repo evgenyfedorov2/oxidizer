@@ -38,6 +38,7 @@
 - **Lazy event views** - each processor receives an `EventView` and pulls only the fields it needs; skipped fields never invoke their redaction closure (zero cost for rejected fields). Laziness past construction is per field, not per signal - see `emit!`'s "What emitting costs"
 - **Allocation-free static keys** - all field, enrichment, and interop keys are `&'static str`, so `Key`/`FieldDescriptor`/`LogFieldEntry`/`MetricFieldEntry` are `Copy` and snapshotting consumers (e.g. snapshotting/replay processors) retain keys with zero allocation. The `tracing` bridge forwards `tracing`'s `&'static` field/target/file names directly instead of cloning them.
 - **Interest-based lazy construction** - processors implement the required `is_interested(&EventDescription)`; if all return `false` the event closure is never called. It runs both as the construction gate and again while routing, so it may be called more than once per emission - keep it cheap, and keep the answer stable across those calls
+- **Early sampling** - after static interest accepts direct emission through a non-composite sink, an optional `EarlySampler` runs. `Drop` discards the event before typed construction. `ContinueWith` attaches an opaque `SamplingId`. Composite dispatch does not yet call samplers on its child sinks.
 - **Per-processor filtering** - a processor that answers `false` from `is_interested` never receives the event, even when a peer accepted it
 - **OpenTelemetry integration** - built on `opentelemetry_sdk` log and metric providers (value-layer only; no OTel Context dependency)
 - **Foreign event interoperability** - the `interop` module exposes the type-erased `DynEvent` trait and `emit_dyn_event` entry point for bridging events from other telemetry crates (e.g. `tracing`, `log`) that cannot implement the typed `Event` trait. These adapted events flow through the sink's normal pipeline (enrichment, interest checks, processors). `interop` types are **not** re-exported at the crate root; reach them via `observed::interop::{DynEvent, emit_dyn_event}`.
@@ -59,6 +60,10 @@ emit!(sink, MyEvent { a: expensive() })
   │
   ├── interest check: any processor interested in MyEvent::DESCRIPTION?
   │     -> if none interested, early exit (event closure NOT called)
+  │
+  ├── optional early sampler on a non-composite sink
+  │     -> Drop: early exit (event closure NOT called)
+  │     -> Continue / ContinueWith(SamplingId): proceed
   │
   ├── construct event: let event = closure()
   │

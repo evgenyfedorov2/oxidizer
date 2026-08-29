@@ -34,9 +34,12 @@ pub trait EventProcessor: Send + Sync {
     /// so it may run more than once per emission - and once per child for a
     /// composite sink. Keep it cheap, and let the answer depend only on
     /// `description` and on state that changes at most once, such as a
-    /// `OnceLock` filled during initialization. A sampler, rate limiter, or any
-    /// filter whose answer varies per call belongs in
-    /// [`process()`](Self::process), which runs exactly once per delivery.
+    /// `OnceLock` filled during initialization. A decision that applies to
+    /// one processor and can change for each delivery belongs in
+    /// [`process()`](Self::process). A whole-event decision that must occur
+    /// before typed construction belongs in an
+    /// [`EarlySampler`](crate::sampling::EarlySampler) attached to a
+    /// non-composite [`Sink`](crate::Sink).
     ///
     /// It is both the lazy-construction gate and the per-processor routing
     /// decision: if **all** processors return `false` the event closure is
