@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Behavior tests for early-sampling decisions on a non-composite sink and
-//! the additive `EventView` id transport.
+//! Behavior tests for early sampling on a non-composite sink.
 //!
 //! These exercise the public `Sink` / `EventView` surface directly - never
 //! `emit!` macro expansion or internal cache shape - one behavior per test.
@@ -15,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use observed::interop::{DynEvent, emit_dyn_event};
 use observed::metadata::{EventDescription, InstrumentKind, LogDescription, MetricDescription, SourceLocation};
 use observed::processing::{EventProcessor, EventView, FieldVisitorFn};
-use observed::sampling::{EarlySampler, EarlySamplingDecision, EventMetadata, SamplingId};
+use observed::sampling::{EarlySampler, EventMetadata, SamplingDecision};
 use observed::{Event, FlushError, Severity, Sink};
 use tick::SimpleClock;
 
@@ -44,7 +43,7 @@ impl Event for MixedEvent {
 
 /// Builds `MixedEvent` via `Sink::emit` directly (bypassing the `emit!`
 /// macro) so the test can observe whether the build closure ran at all,
-/// which is exactly what an `EarlySamplingDecision::Drop` must prevent.
+/// which is exactly what a `SamplingDecision::Drop` must prevent.
 fn emit_mixed_event(sink: &Sink, evaluated: &Arc<AtomicBool>) {
     let evaluated = Arc::clone(evaluated);
     sink.emit(
@@ -60,11 +59,11 @@ fn emit_mixed_event(sink: &Sink, evaluated: &Arc<AtomicBool>) {
 /// times [`EarlySampler::sample`] ran.
 struct ScriptedSampler {
     calls: AtomicU32,
-    decision: EarlySamplingDecision,
+    decision: SamplingDecision,
 }
 
 impl ScriptedSampler {
-    fn new(decision: EarlySamplingDecision) -> Arc<Self> {
+    fn new(decision: SamplingDecision) -> Arc<Self> {
         Arc::new(Self {
             calls: AtomicU32::new(0),
             decision,
@@ -77,27 +76,20 @@ impl ScriptedSampler {
 }
 
 impl EarlySampler for ScriptedSampler {
-    fn sample(&self, _event: &EventMetadata<'_>) -> EarlySamplingDecision {
+    fn sample(&self, _event: &EventMetadata<'_>) -> SamplingDecision {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.decision
     }
 }
 
-/// Records every [`EventView::sampling_id`] it is handed and how many times
-/// [`EventProcessor::process`] ran - the "did this processor see the event,
-/// and with what id" fixture used across most tests below.
 #[derive(Default)]
 struct Recorder {
-    seen_ids: Mutex<Vec<Option<SamplingId>>>,
+    process_count: AtomicU32,
 }
 
 impl Recorder {
     fn process_count(&self) -> usize {
-        self.seen_ids.lock().expect("lock is not poisoned").len()
-    }
-
-    fn seen_ids(&self) -> Vec<Option<SamplingId>> {
-        self.seen_ids.lock().expect("lock is not poisoned").clone()
+        self.process_count.load(Ordering::SeqCst) as usize
     }
 }
 
@@ -106,8 +98,8 @@ impl EventProcessor for Recorder {
         true
     }
 
-    fn process(&self, event: &EventView<'_>) {
-        self.seen_ids.lock().expect("lock is not poisoned").push(event.sampling_id());
+    fn process(&self, _event: &EventView<'_>) {
+        self.process_count.fetch_add(1, Ordering::SeqCst);
     }
 
     fn flush(&self) -> Result<(), FlushError> {
@@ -185,7 +177,7 @@ impl EventProcessor for MetricOnlyRecorder {
 #[test]
 fn statically_uninterested_sink_never_calls_sampler() {
     let processor = Arc::new(NeverInterestedProcessor::default());
-    let sampler = ScriptedSampler::new(EarlySamplingDecision::Continue);
+    let sampler = ScriptedSampler::new(SamplingDecision::Continue);
     let sink = Sink::new(
         "uninterested",
         vec![Arc::clone(&processor) as Arc<dyn EventProcessor>],
@@ -207,7 +199,7 @@ fn statically_uninterested_sink_never_calls_sampler() {
 #[test]
 fn drop_prevents_typed_event_closure_from_running() {
     let processor = Arc::new(Recorder::default());
-    let sampler = ScriptedSampler::new(EarlySamplingDecision::Drop);
+    let sampler = ScriptedSampler::new(SamplingDecision::Drop);
     let sink = Sink::new(
         "drop-closure",
         vec![Arc::clone(&processor) as Arc<dyn EventProcessor>],
@@ -227,7 +219,7 @@ fn drop_prevents_typed_event_closure_from_running() {
 fn drop_suppresses_every_signal_on_a_mixed_log_and_metric_event() {
     let log_processor = Arc::new(LogOnlyRecorder::default());
     let metric_processor = Arc::new(MetricOnlyRecorder::default());
-    let sampler = ScriptedSampler::new(EarlySamplingDecision::Drop);
+    let sampler = ScriptedSampler::new(SamplingDecision::Drop);
     let sink = Sink::new(
         "drop-mixed",
         vec![
@@ -248,13 +240,13 @@ fn drop_suppresses_every_signal_on_a_mixed_log_and_metric_event() {
 }
 
 // ---------------------------------------------------------------------------
-// Continue / ContinueWith id transport
+// Continue
 // ---------------------------------------------------------------------------
 
 #[test]
-fn continue_carries_no_sampling_id() {
+fn continue_dispatches_event() {
     let processor = Arc::new(Recorder::default());
-    let sampler = ScriptedSampler::new(EarlySamplingDecision::Continue);
+    let sampler = ScriptedSampler::new(SamplingDecision::Continue);
     let sink = Sink::new(
         "continue",
         vec![Arc::clone(&processor) as Arc<dyn EventProcessor>],
@@ -266,37 +258,7 @@ fn continue_carries_no_sampling_id() {
     emit_mixed_event(&sink, &evaluated);
 
     assert!(evaluated.load(Ordering::SeqCst));
-    assert_eq!(processor.seen_ids(), vec![None]);
-}
-
-#[test]
-fn continue_with_round_trips_exact_caller_supplied_id() {
-    let processor = Arc::new(Recorder::default());
-    let sampler = ScriptedSampler::new(EarlySamplingDecision::ContinueWith(SamplingId::new(42)));
-    let sink = Sink::new(
-        "continue-with",
-        vec![Arc::clone(&processor) as Arc<dyn EventProcessor>],
-        SimpleClock::new_frozen(),
-    )
-    .with_early_sampler(Arc::clone(&sampler) as Arc<dyn EarlySampler>);
-
-    let evaluated = Arc::new(AtomicBool::new(false));
-    emit_mixed_event(&sink, &evaluated);
-
-    assert!(evaluated.load(Ordering::SeqCst));
-    assert_eq!(processor.seen_ids(), vec![Some(SamplingId::new(42))]);
-}
-
-#[test]
-fn synthetic_view_round_trips_supplied_sampling_id() {
-    let event = SourcelessDynEvent;
-    let timestamp = std::time::SystemTime::UNIX_EPOCH;
-
-    let with_id = EventView::new_synthetic_with_sampling_id(&event, timestamp, Some(SamplingId::new(42)));
-    let without_id = EventView::new_synthetic(&event, timestamp);
-
-    assert_eq!(with_id.sampling_id(), Some(SamplingId::new(42)));
-    assert_eq!(without_id.sampling_id(), None);
+    assert_eq!(processor.process_count(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -354,9 +316,9 @@ impl DynEvent for CountingDynEvent {
 struct ReadsSourceLineOnly;
 
 impl EarlySampler for ReadsSourceLineOnly {
-    fn sample(&self, event: &EventMetadata<'_>) -> EarlySamplingDecision {
+    fn sample(&self, event: &EventMetadata<'_>) -> SamplingDecision {
         let _ = event.source_line();
-        EarlySamplingDecision::Continue
+        SamplingDecision::Continue
     }
 }
 
@@ -425,10 +387,10 @@ struct RecordsSource {
 }
 
 impl EarlySampler for RecordsSource {
-    fn sample(&self, event: &EventMetadata<'_>) -> EarlySamplingDecision {
+    fn sample(&self, event: &EventMetadata<'_>) -> SamplingDecision {
         let captured = (event.source_crate(), event.source_file(), event.source_line());
         *self.seen.lock().expect("lock is not poisoned") = Some(captured);
-        EarlySamplingDecision::Continue
+        SamplingDecision::Continue
     }
 }
 
@@ -480,8 +442,8 @@ fn typed_event_metadata_reports_emit_source_location() {
 
 #[test]
 fn calling_with_early_sampler_twice_replaces_first_sampler() {
-    let first = ScriptedSampler::new(EarlySamplingDecision::Drop);
-    let second = ScriptedSampler::new(EarlySamplingDecision::Continue);
+    let first = ScriptedSampler::new(SamplingDecision::Drop);
+    let second = ScriptedSampler::new(SamplingDecision::Continue);
     let processor = Arc::new(Recorder::default());
 
     let sink = Sink::new(
@@ -506,7 +468,7 @@ fn calling_with_early_sampler_twice_replaces_first_sampler() {
 
 #[test]
 fn an_empty_sink_accepts_a_sampler_but_never_consults_it() {
-    let sampler = ScriptedSampler::new(EarlySamplingDecision::Continue);
+    let sampler = ScriptedSampler::new(SamplingDecision::Continue);
     let sink = Sink::new("empty", Vec::new(), SimpleClock::new_frozen()).with_early_sampler(Arc::clone(&sampler) as Arc<dyn EarlySampler>);
 
     let evaluated = Arc::new(AtomicBool::new(false));
@@ -528,7 +490,7 @@ fn with_early_sampler_keeps_composite_sink_unchanged() {
         vec![Arc::clone(&processor) as Arc<dyn EventProcessor>],
         SimpleClock::new_frozen(),
     );
-    let sampler = ScriptedSampler::new(EarlySamplingDecision::Drop);
+    let sampler = ScriptedSampler::new(SamplingDecision::Drop);
     let sink = Sink::composite([child]).with_early_sampler(Arc::clone(&sampler) as Arc<dyn EarlySampler>);
 
     let evaluated = Arc::new(AtomicBool::new(false));
@@ -541,7 +503,7 @@ fn with_early_sampler_keeps_composite_sink_unchanged() {
 
 #[test]
 fn with_early_sampler_keeps_noop_sink_unchanged() {
-    let sampler = ScriptedSampler::new(EarlySamplingDecision::Continue);
+    let sampler = ScriptedSampler::new(SamplingDecision::Continue);
     let sink = Sink::noop().with_early_sampler(Arc::clone(&sampler) as Arc<dyn EarlySampler>);
 
     let evaluated = Arc::new(AtomicBool::new(false));

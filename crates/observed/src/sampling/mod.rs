@@ -5,17 +5,12 @@
 //! direct emission through a non-composite sink.
 //!
 //! An [`EarlySampler`] receives borrowed [`EventMetadata`] before event
-//! construction. It returns an [`EarlySamplingDecision`]:
+//! construction. It returns a [`SamplingDecision`]:
 //!
-//! - [`EarlySamplingDecision::Drop`] discards the event before its typed
+//! - [`SamplingDecision::Drop`] discards the event before its typed
 //!   value is constructed - no processor on the sink, log or metric, sees any
 //!   signal from it.
-//! - [`EarlySamplingDecision::Continue`] emits the event normally, with no
-//!   sampling id attached.
-//! - [`EarlySamplingDecision::ContinueWith`] emits the event and attaches a
-//!   caller-chosen [`SamplingId`], readable back from the resulting
-//!   [`EventView`](crate::processing::EventView) via
-//!   [`EventView::sampling_id`](crate::processing::EventView::sampling_id).
+//! - [`SamplingDecision::Continue`] emits the event normally.
 //!
 //! Attach a sampler to a non-composite sink with
 //! [`Sink::with_early_sampler`](crate::Sink::with_early_sampler):
@@ -24,13 +19,13 @@
 //! use std::sync::Arc;
 //!
 //! use observed::Sink;
-//! use observed::sampling::{EarlySampler, EarlySamplingDecision, EventMetadata};
+//! use observed::sampling::{EarlySampler, EventMetadata, SamplingDecision};
 //!
 //! struct DropEverything;
 //!
 //! impl EarlySampler for DropEverything {
-//!     fn sample(&self, _event: &EventMetadata<'_>) -> EarlySamplingDecision {
-//!         EarlySamplingDecision::Drop
+//!     fn sample(&self, _event: &EventMetadata<'_>) -> SamplingDecision {
+//!         SamplingDecision::Drop
 //!     }
 //! }
 //!
@@ -50,11 +45,9 @@
 //! required.
 
 mod decision;
-mod id;
 mod metadata;
 mod sampler;
 
-pub use decision::EarlySamplingDecision;
-pub use id::SamplingId;
+pub use decision::SamplingDecision;
 pub use metadata::EventMetadata;
 pub use sampler::EarlySampler;

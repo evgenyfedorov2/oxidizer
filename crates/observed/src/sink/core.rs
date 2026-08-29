@@ -13,7 +13,7 @@ use crate::enrichment::{EnrichmentEntry, EnrichmentTransfer, Guard, Slot};
 use crate::interop::DynEvent;
 use crate::metadata::{EventDescription, SourceLocation};
 use crate::processing::{EventProcessor, EventView, IntermediateEvent};
-use crate::sampling::{EarlySampler, EarlySamplingDecision, SamplingId};
+use crate::sampling::{EarlySampler, SamplingDecision};
 use crate::{Event, FlushError, SinkFlushError, SinkId};
 
 /// The no-op sink's id returned by [`Sink::noop`]'s `id()` accessor
@@ -147,13 +147,13 @@ impl Sink {
     /// use std::sync::Arc;
     ///
     /// use observed::Sink;
-    /// use observed::sampling::{EarlySampler, EarlySamplingDecision, EventMetadata};
+    /// use observed::sampling::{EarlySampler, EventMetadata, SamplingDecision};
     ///
     /// struct AlwaysContinue;
     ///
     /// impl EarlySampler for AlwaysContinue {
-    ///     fn sample(&self, _event: &EventMetadata<'_>) -> EarlySamplingDecision {
-    ///         EarlySamplingDecision::Continue
+    ///     fn sample(&self, _event: &EventMetadata<'_>) -> SamplingDecision {
+    ///         SamplingDecision::Continue
     ///     }
     /// }
     ///
@@ -376,14 +376,11 @@ impl Sink {
             return;
         }
 
-        let sampling_id = match &*self.inner {
-            SinkInner::Single(single) => match single.sample_early(&state, description) {
-                EarlySamplingDecision::Drop => return,
-                EarlySamplingDecision::Continue => None,
-                EarlySamplingDecision::ContinueWith(id) => Some(id),
-            },
-            SinkInner::Composite { .. } | SinkInner::Noop { .. } => None,
-        };
+        if let SinkInner::Single(single) = &*self.inner
+            && single.sample_early(&state, description) == SamplingDecision::Drop
+        {
+            return;
+        }
 
         // Build the event value BEFORE taking the reentrancy guard. `evaluate`
         // runs ordinary user code - a field initializer may call a helper that
@@ -396,7 +393,7 @@ impl Sink {
             return;
         };
 
-        self.dispatch_to_processors(&event, &description, sampling_id);
+        self.dispatch_to_processors(&event, &description);
     }
 
     /// Returns `true` if at least one processor is interested in the event.
@@ -417,15 +414,13 @@ impl Sink {
     /// The reentrancy guard acquired in [`Sink::emit_impl`] is held across all
     /// sibling dispatches, so composites safely iterate children without the
     /// guard falsely tripping.
-    ///
-    /// `sampling_id` is the id from the sink's early decision.
-    fn dispatch_to_processors(&self, event: &dyn DynEvent, description: &EventDescription, sampling_id: Option<SamplingId>) {
+    fn dispatch_to_processors(&self, event: &dyn DynEvent, description: &EventDescription) {
         match &*self.inner {
-            SinkInner::Single(state) => state.dispatch(event, description, sampling_id),
+            SinkInner::Single(state) => state.dispatch(event, description),
             SinkInner::Composite { children } => {
                 for child in children {
                     if child.is_interested(description) {
-                        child.dispatch(event, description, None);
+                        child.dispatch(event, description);
                     }
                 }
             }
@@ -524,27 +519,20 @@ impl SingleSinkState {
         &self,
         state: &IntermediateEvent<'_, F>,
         description: EventDescription,
-    ) -> EarlySamplingDecision {
+    ) -> SamplingDecision {
         match &self.early_sampler {
             Some(sampler) => sampler.sample(&state.metadata(description)),
-            None => EarlySamplingDecision::Continue,
+            None => SamplingDecision::Continue,
         }
     }
 
     /// Builds an [`EventView`] rooted at this leaf's enrichment slot and
     /// hands it to every interested processor.
-    fn dispatch(&self, event: &dyn DynEvent, description: &EventDescription, sampling_id: Option<SamplingId>) {
+    fn dispatch(&self, event: &dyn DynEvent, description: &EventDescription) {
         // Reading the leaf's clock keeps timestamps off `SystemTime::now()`,
         // so frozen clocks make this Miri-safe.
         let timestamp = self.clock.system_time();
-        let view = EventView::new(
-            event,
-            self.enrichment.current(),
-            self.isolated_enrichment,
-            self.id,
-            timestamp,
-            sampling_id,
-        );
+        let view = EventView::new(event, self.enrichment.current(), self.isolated_enrichment, self.id, timestamp);
         for processor in self.processors.iter() {
             if processor.is_interested(description) {
                 processor.process(&view);
@@ -610,7 +598,7 @@ mod tests {
         let description = EventDescription::new("dummy", None, None, None, false, false);
 
         assert!(!noop.is_interested_in(&description));
-        noop.dispatch_to_processors(&DummyDyn, &description, None);
+        noop.dispatch_to_processors(&DummyDyn, &description);
         noop.flush().expect("noop flush should succeed");
     }
 
@@ -743,7 +731,7 @@ mod tests {
 
         let description = dummy_description();
         assert!(sink.is_interested_in(&description));
-        sink.dispatch_to_processors(&DummyDyn, &description, None);
+        sink.dispatch_to_processors(&DummyDyn, &description);
 
         assert_eq!(uninterested.processed.load(Ordering::Relaxed), 0);
         assert_eq!(interested.processed.load(Ordering::Relaxed), 1);

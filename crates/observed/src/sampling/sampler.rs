@@ -3,7 +3,7 @@
 
 //! The [`EarlySampler`] extension point.
 
-use super::{EarlySamplingDecision, EventMetadata};
+use super::{EventMetadata, SamplingDecision};
 
 /// A sampler called before event construction during direct emission through
 /// a non-composite sink.
@@ -24,17 +24,16 @@ use super::{EarlySamplingDecision, EventMetadata};
 /// # Examples
 ///
 /// ```
-/// use observed::sampling::{EarlySampler, EarlySamplingDecision, EventMetadata, SamplingId};
+/// use observed::sampling::{EarlySampler, EventMetadata, SamplingDecision};
 ///
-/// /// Tags every event that originated in `noisy_crate` with a fixed id, and
-/// /// drops everything else.
+/// /// Continues events from `important_crate` and drops all other events.
 /// struct OnlyNoisyCrate;
 ///
 /// impl EarlySampler for OnlyNoisyCrate {
-///     fn sample(&self, event: &EventMetadata<'_>) -> EarlySamplingDecision {
+///     fn sample(&self, event: &EventMetadata<'_>) -> SamplingDecision {
 ///         match event.source_crate().as_deref() {
-///             Some("noisy_crate") => EarlySamplingDecision::ContinueWith(SamplingId::new(1)),
-///             _ => EarlySamplingDecision::Drop,
+///             Some("important_crate") => SamplingDecision::Continue,
+///             _ => SamplingDecision::Drop,
 ///         }
 ///     }
 /// }
@@ -45,5 +44,5 @@ pub trait EarlySampler: Send + Sync {
     /// The sink calls this method at most once per emission. The method must
     /// have a low cost and must not emit through `observed`. See
     /// [the trait-level warning](Self#must-not-emit-through-observed).
-    fn sample(&self, event: &EventMetadata<'_>) -> EarlySamplingDecision;
+    fn sample(&self, event: &EventMetadata<'_>) -> SamplingDecision;
 }

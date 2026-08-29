@@ -20,16 +20,16 @@ use crate::metadata::{EventDescription, SourceLocation};
 /// # Examples
 ///
 /// ```
-/// use observed::sampling::{EarlySampler, EarlySamplingDecision, EventMetadata};
+/// use observed::sampling::{EarlySampler, EventMetadata, SamplingDecision};
 ///
 /// struct DropNoisyEvents;
 ///
 /// impl EarlySampler for DropNoisyEvents {
-///     fn sample(&self, event: &EventMetadata<'_>) -> EarlySamplingDecision {
+///     fn sample(&self, event: &EventMetadata<'_>) -> SamplingDecision {
 ///         if event.description().name() == "noisy.event" {
-///             EarlySamplingDecision::Drop
+///             SamplingDecision::Drop
 ///         } else {
-///             EarlySamplingDecision::Continue
+///             SamplingDecision::Continue
 ///         }
 ///     }
 /// }

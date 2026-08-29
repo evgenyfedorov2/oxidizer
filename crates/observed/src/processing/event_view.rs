@@ -23,7 +23,6 @@ use crate::enrichment::{EnrichmentNode, OptEnrichmentNode};
 use crate::interop::DynEvent;
 use crate::metadata::{EventDescription, FieldDescriptor, LogDescription, LogFieldEntry, MetricFieldEntry};
 use crate::processing::FieldValueFn;
-use crate::sampling::SamplingId;
 use crate::{Severity, SinkId, Value};
 
 /// Snapshot of the enrichment context attached to an event.
@@ -105,7 +104,6 @@ pub struct EventView<'a> {
     event: &'a dyn DynEvent,
     enrichments: EventEnrichment,
     timestamp: SystemTime,
-    sampling_id: Option<SamplingId>,
 }
 
 impl<'a> EventView<'a> {
@@ -119,15 +117,12 @@ impl<'a> EventView<'a> {
     /// supplies the timestamp (read from the sink's clock) so the view never
     /// calls `SystemTime::now()` directly — keeping it deterministic under a
     /// frozen clock and usable under Miri isolation.
-    ///
-    /// `sampling_id` is the sink's early-sampling decision id, if any.
     pub(crate) fn new(
         event: &'a dyn DynEvent,
         enrichment_head: OptEnrichmentNode,
         isolated: bool,
         id: SinkId,
         timestamp: SystemTime,
-        sampling_id: Option<SamplingId>,
     ) -> Self {
         Self {
             event,
@@ -137,7 +132,6 @@ impl<'a> EventView<'a> {
                 id,
             },
             timestamp,
-            sampling_id,
         }
     }
 
@@ -147,32 +141,11 @@ impl<'a> EventView<'a> {
     /// The view carries **no enrichment**: [`visit_enrichments`](Self::visit_enrichments)
     /// never invokes the visitor. A replayed event must therefore carry any
     /// context it needs as its own fields.
-    ///
-    /// Carries no [`SamplingId`] - equivalent to
-    /// [`new_synthetic_with_sampling_id`](Self::new_synthetic_with_sampling_id)
-    /// with `None`. Use that constructor instead when replaying an event that
-    /// must preserve an id captured by an earlier live emission.
     pub fn new_synthetic(event: &'a dyn DynEvent, timestamp: SystemTime) -> Self {
-        Self::new_synthetic_with_sampling_id(event, timestamp, None)
-    }
-
-    /// Builds a view for a synthetic / replayed event that also carries an
-    /// optional [`SamplingId`], alongside the caller-supplied `timestamp`.
-    ///
-    /// Intended for replay paths (e.g. a delayed-event capture) that must
-    /// preserve a [`SamplingId`] attached by an original live emission's
-    /// [`EarlySamplingDecision::ContinueWith`](crate::sampling::EarlySamplingDecision::ContinueWith)
-    /// instead of sampling again on replay. Passing `None` behaves exactly like
-    /// [`new_synthetic`](Self::new_synthetic).
-    ///
-    /// Like [`new_synthetic`](Self::new_synthetic), the view carries **no
-    /// enrichment**.
-    pub fn new_synthetic_with_sampling_id(event: &'a dyn DynEvent, timestamp: SystemTime, sampling_id: Option<SamplingId>) -> Self {
         Self {
             event,
             enrichments: EventEnrichment::empty(),
             timestamp,
-            sampling_id,
         }
     }
 
@@ -246,15 +219,6 @@ impl<'a> EventView<'a> {
         self.event.description()
     }
 
-    /// Returns the [`SamplingId`] attached by an
-    /// [`EarlySampler`](crate::sampling::EarlySampler)'s `ContinueWith`
-    /// decision, if any.
-    #[must_use]
-    #[inline]
-    pub fn sampling_id(&self) -> Option<SamplingId> {
-        self.sampling_id
-    }
-
     /// Visits event fields lazily.
     ///
     /// For each field, the visitor receives a [`FieldDescriptor`] and a getter
@@ -291,7 +255,6 @@ impl std::fmt::Debug for EventView<'_> {
         f.debug_struct(std::any::type_name::<Self>())
             .field("name", &self.event.name())
             .field("severity", &self.severity())
-            .field("sampling_id", &self.sampling_id)
             .finish_non_exhaustive()
     }
 }

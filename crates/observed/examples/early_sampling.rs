@@ -5,14 +5,13 @@
 //! typed value is constructed.
 //!
 //! This example attaches one [`EarlySampler`] to a sink with a log processor
-//! and a metric processor, then emits four events that each exercise a
-//! different decision:
+//! and a metric processor. It then emits events that the sampler drops or
+//! continues:
 //!
 //! | Event | Decision | What to notice |
 //! |-------|----------|-----------------|
 //! | `noisy.request` | `Drop` | its field constructor never prints - the typed value is never built |
-//! | `normal.request` | `Continue` | reaches both processors, with no sampling id |
-//! | `special.request` | `ContinueWith(SamplingId::new(42))` | the log processor prints the exact id `42` |
+//! | `normal.request` | `Continue` | reaches the log processor |
 //! | `queue.depth` (metric-only) | `Drop` | the *whole event* is dropped - the metric processor never sees it either |
 //! | `active.workers` (metric-only) | `Continue` | the metric processor prints it, proving the dropped metric had a live route |
 //!
@@ -25,7 +24,7 @@ use std::sync::{Arc, Mutex};
 
 use observed::metadata::EventDescription;
 use observed::processing::{EventProcessor, EventView};
-use observed::sampling::{EarlySampler, EarlySamplingDecision, EventMetadata, SamplingId};
+use observed::sampling::{EarlySampler, EventMetadata, SamplingDecision};
 use observed::{Sink, emit, event};
 
 /// A log-producing event. Its `status` field is computed by
@@ -42,15 +41,6 @@ struct NoisyRequest {
 #[event("normal.request")]
 #[info("An ordinary request")]
 struct NormalRequest {
-    #[unredacted]
-    status: i64,
-}
-
-/// A log-producing event. The sampler sets a fixed [`SamplingId`] on this
-/// event.
-#[event("special.request")]
-#[info("A request with a sampling id for later processing")]
-struct SpecialRequest {
     #[unredacted]
     status: i64,
 }
@@ -74,29 +64,26 @@ struct ActiveWorkers {
 
 /// Computes `NoisyRequest::status`.
 ///
-/// If this function prints, `EarlySamplingDecision::Drop` did not stop typed
+/// If this function prints, `SamplingDecision::Drop` did not stop typed
 /// event construction.
 fn constructing_noisy_status() -> i64 {
     println!("  (constructing NoisyRequest - this line must NOT print, since the sampler drops it before construction)");
     7
 }
 
-/// Drops `noisy.request` and `queue.depth`, tags `special.request` with id
-/// `42`, and continues everything else unchanged.
+/// Drops `noisy.request` and `queue.depth`. Continues all other events.
 struct DemoSampler;
 
 impl EarlySampler for DemoSampler {
-    fn sample(&self, event: &EventMetadata<'_>) -> EarlySamplingDecision {
+    fn sample(&self, event: &EventMetadata<'_>) -> SamplingDecision {
         match event.description().name() {
-            "noisy.request" | "queue.depth" => EarlySamplingDecision::Drop,
-            "special.request" => EarlySamplingDecision::ContinueWith(SamplingId::new(42)),
-            _ => EarlySamplingDecision::Continue,
+            "noisy.request" | "queue.depth" => SamplingDecision::Drop,
+            _ => SamplingDecision::Continue,
         }
     }
 }
 
-/// Records every log-producing event it is handed, alongside the sampling id
-/// (if any) attached to it.
+/// Records every log-producing event it receives.
 struct LogRecorder {
     lines: Arc<Mutex<Vec<String>>>,
 }
@@ -107,11 +94,10 @@ impl EventProcessor for LogRecorder {
     }
 
     fn process(&self, event: &EventView<'_>) {
-        self.lines.lock().expect("lock is not poisoned").push(format!(
-            "[LOG] {name} (sampling_id={id:?})",
-            name = event.name(),
-            id = event.sampling_id().map(SamplingId::get)
-        ));
+        self.lines
+            .lock()
+            .expect("lock is not poisoned")
+            .push(format!("[LOG] {name}", name = event.name()));
     }
 
     fn flush(&self) -> Result<(), observed::FlushError> {
@@ -167,11 +153,8 @@ fn main() {
         }
     );
 
-    println!("Emitting normal.request (continues, no sampling id) ...");
+    println!("Emitting normal.request (continues) ...");
     emit!(sink, NormalRequest { status: 200 });
-
-    println!("Emitting special.request (continues with SamplingId::new(42)) ...");
-    emit!(sink, SpecialRequest { status: 200 });
 
     println!("Emitting queue.depth (metric-only event, dropped as a whole event) ...");
     emit!(sink, QueueDepth { depth: 3 });
