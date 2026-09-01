@@ -12,8 +12,8 @@ use crate::context::Transfer;
 use crate::enrichment::{EnrichmentEntry, EnrichmentTransfer, Guard, Slot};
 use crate::interop::DynEvent;
 use crate::metadata::{EventDescription, SourceLocation};
-use crate::processing::{EventProcessor, EventView, IntermediateEvent};
-use crate::sampling::{EarlySampler, SamplingDecision};
+use crate::processing::{EventProcessor, EventView, TypedEvent};
+use crate::sampling::{EarlySampler, EventMetadata};
 use crate::{Event, FlushError, SinkFlushError, SinkId};
 
 /// The no-op sink's id returned by [`Sink::noop`]'s `id()` accessor
@@ -144,31 +144,29 @@ impl Sink {
     /// # Examples
     ///
     /// ```
-    /// use std::sync::Arc;
-    ///
     /// use observed::Sink;
-    /// use observed::sampling::{EarlySampler, EventMetadata, SamplingDecision};
+    /// use observed::sampling::{EarlySampler, EventMetadata};
     ///
-    /// struct AlwaysContinue;
+    /// struct ProcessEverything;
     ///
-    /// impl EarlySampler for AlwaysContinue {
-    ///     fn sample(&self, _event: &EventMetadata<'_>) -> SamplingDecision {
-    ///         SamplingDecision::Continue
+    /// impl EarlySampler for ProcessEverything {
+    ///     fn sample(&self, event: EventMetadata) -> Vec<EventMetadata> {
+    ///         vec![event]
     ///     }
     /// }
     ///
     /// let sink = Sink::new("svc", Vec::new(), tick::SimpleClock::new_system())
-    ///     .with_early_sampler(Arc::new(AlwaysContinue));
+    ///     .with_early_sampler(ProcessEverything);
     /// ```
     ///
     /// This minimal snippet demonstrates attachment only. Because the sink has
     /// no processors, emission stops at the static-interest check and does not
     /// call the sampler.
     #[must_use]
-    pub fn with_early_sampler(self, sampler: Arc<dyn EarlySampler>) -> Self {
+    pub fn with_early_sampler(self, sampler: impl EarlySampler + 'static) -> Self {
         if let SinkInner::Single(state) = &*self.inner {
             let state = SingleSinkState {
-                early_sampler: Some(sampler),
+                early_sampler: Some(Arc::new(sampler)),
                 ..state.clone()
             };
             return Self {
@@ -296,6 +294,11 @@ impl Sink {
     /// `flush()` returns. Every processor is flushed even after one fails,
     /// and every failure is reported.
     ///
+    /// This method flushes processors only. It does not ask an
+    /// [`EarlySampler`] for the events that the sampler keeps - only a later
+    /// [`EarlySampler::sample`] call
+    /// releases such an event.
+    ///
     /// # Errors
     ///
     /// Returns a [`SinkFlushError`] carrying one [`FlushError`]
@@ -355,43 +358,63 @@ impl Sink {
 
     /// Builds an event via `build` and emits it to every registered processor.
     ///
+    /// The event must be `'static`: the pipeline owns the value it builds, and
+    /// an [`EarlySampler`] may keep it beyond
+    /// this call. Give an event that reports borrowed data an owned field
+    /// instead of a reference with a shorter lifetime.
+    ///
     /// Called by the [`emit!`](crate::emit!) macro with the captured
     /// [`SourceLocation`]; prefer that macro over calling this directly.
-    pub fn emit<E: Event, F: FnOnce() -> E>(&self, build: F, source_location: SourceLocation) {
-        let state = IntermediateEvent::typed(build, source_location);
-        self.emit_impl(state);
+    pub fn emit<E: Event + 'static, F: FnOnce() -> E>(&self, build: F, source_location: SourceLocation) {
+        self.emit_owned(E::DESCRIPTION, move || TypedEvent::new(build(), source_location));
     }
 
-    /// Dispatches an event through the sink.
+    /// Emits an already-built [`DynEvent`] that the sink takes ownership of.
     ///
-    /// It's automatically called by the `emit!` macro expansion, and can be called directly for
-    /// [`DynEvent`s](DynEvent)
-    pub(crate) fn emit_impl<'a, T: Event, F: FnOnce() -> T + 'a>(&self, state: IntermediateEvent<'a, F>) {
+    /// Called by the type-erased
+    /// [`emit_dyn_event`](crate::interop::emit_dyn_event) entry point.
+    pub(crate) fn emit_dyn<E: DynEvent + 'static>(&self, event: E) {
+        let description = event.description();
+        self.emit_owned(description, move || event);
+    }
+
+    /// Runs one emission: interest check, event construction, sampling, and
+    /// processor dispatch.
+    ///
+    /// `build` produces the owned event. The sink calls it only after the
+    /// static-interest check accepts `description`, so an event that nothing
+    /// wants costs nothing to skip.
+    fn emit_owned<E: DynEvent + 'static, F: FnOnce() -> E>(&self, description: EventDescription, build: F) {
         if self.is_noop() {
             return;
         }
 
-        let description = state.description();
         if !self.is_interested_in(&description) {
             return;
         }
 
-        if let SinkInner::Single(single) = &*self.inner
-            && single.sample_early(&state, description) == SamplingDecision::Drop
-        {
-            return;
-        }
-
-        // Build the event value BEFORE taking the reentrancy guard. `evaluate`
+        // Build the event value BEFORE taking the reentrancy guard. `build`
         // runs ordinary user code - a field initializer may call a helper that
         // legitimately emits telemetry of its own, often to an unrelated sink.
         // The hazard the guard exists for starts when processors run, so
         // holding it across construction would silently drop that telemetry.
-        let event = state.evaluate();
+        let event = build();
 
+        // The guard covers sampling too. A sampler may hold events, so calling
+        // it during a reentrant emission would make it release its held events
+        // into a dispatch that this thread must skip, and they would be lost.
         let Some(_guard) = super::try_acquire_reentrancy_guard() else {
             return;
         };
+
+        if let SinkInner::Single(single) = &*self.inner
+            && let Some(sampler) = single.early_sampler.as_ref()
+        {
+            // The sampled path is the only one that boxes the event: the
+            // sampler may keep it, so it cannot stay on this stack frame.
+            single.sample_and_process(sampler, Box::new(event));
+            return;
+        }
 
         self.dispatch_to_processors(&event, &description);
     }
@@ -411,7 +434,7 @@ impl Sink {
     /// sink, delegates dispatch to each child leaf so every leaf constructs its
     /// own `EventView` rooted at itself (which walks its own enrichment slot).
     ///
-    /// The reentrancy guard acquired in [`Sink::emit_impl`] is held across all
+    /// The reentrancy guard acquired in [`Sink::emit_owned`] is held across all
     /// sibling dispatches, so composites safely iterate children without the
     /// guard falsely tripping.
     fn dispatch_to_processors(&self, event: &dyn DynEvent, description: &EventDescription) {
@@ -513,16 +536,37 @@ impl SingleSinkState {
         self.processors.iter().any(|p| p.is_interested(description))
     }
 
-    /// Runs this sink's early sampler, if any, against pre-construction
-    /// metadata projected from `state`.
-    fn sample_early<T: Event, F: FnOnce() -> T>(
-        &self,
-        state: &IntermediateEvent<'_, F>,
-        description: EventDescription,
-    ) -> SamplingDecision {
-        match &self.early_sampler {
-            Some(sampler) => sampler.sample(&state.metadata(description)),
-            None => SamplingDecision::Continue,
+    /// Moves `event` into an [`EventMetadata`] value that carries everything
+    /// this leaf needs to process the event, now or from a later
+    /// [`EarlySampler::sample`] call.
+    ///
+    /// The timestamp and the enrichment snapshot are read here, before the
+    /// sampler runs, so a kept event reports the values of its own emission.
+    /// The value also carries the sink id and isolation flag.
+    fn take_ownership(&self, event: Box<dyn DynEvent>) -> EventMetadata {
+        EventMetadata::new(
+            event,
+            self.id,
+            self.isolated_enrichment,
+            self.enrichment.current(),
+            self.clock.system_time(),
+        )
+    }
+
+    /// Hands the owned event to `sampler` and processes each event that the
+    /// sampler returns, in the returned order.
+    /// The caller holds the reentrancy guard, so every returned event reaches
+    /// its processors and an emission from inside `sample` is skipped - see
+    /// the [`EarlySampler`] warning about emitting from inside `sample`.
+    fn sample_and_process(&self, sampler: &Arc<dyn EarlySampler>, event: Box<dyn DynEvent>) {
+        for event in sampler.sample(self.take_ownership(event)) {
+            let view = event.view();
+            let description = view.description();
+            for processor in self.processors.iter() {
+                if processor.is_interested(&description) {
+                    processor.process(&view);
+                }
+            }
         }
     }
 
@@ -592,7 +636,7 @@ mod tests {
 
     #[test]
     fn noop_sink_interest_dispatch_and_flush() {
-        // `emit_impl` gates on `is_noop()`, so these no-op arms are only reachable
+        // `emit_owned` gates on `is_noop()`, so these no-op arms are only reachable
         // by calling the pipeline hooks directly.
         let noop = Sink::noop();
         let description = EventDescription::new("dummy", None, None, None, false, false);

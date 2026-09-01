@@ -11,7 +11,7 @@
 //!
 //! Unlike the [`emit!`](crate::emit!) macro - which lazily builds a concrete
 //! `T: Event` and only evaluates it when a processor is interested -
-//! [`emit_dyn_event`] takes an already-built `&dyn DynEvent` and dispatches it
+//! [`emit_dyn_event`] takes an already-built event by value and dispatches it
 //! directly through the sink's normal pipeline.
 //!
 //! # Privacy
@@ -25,7 +25,7 @@ use std::ops::ControlFlow;
 
 use crate::Sink;
 use crate::metadata::EventDescription;
-use crate::processing::{FieldVisitorFn, IntermediateEvent};
+use crate::processing::FieldVisitorFn;
 
 /// Adaptor for foreign event types that cannot implement [`Event`](crate::Event) directly.
 pub trait DynEvent: Send + Sync {
@@ -92,16 +92,21 @@ pub trait DynEvent: Send + Sync {
 ///
 /// This is the runtime, type-erased counterpart to [`emit!`](crate::emit!). Whereas
 /// `emit!` lazily builds a statically-typed `T: Event` and only evaluates it when a processor is
-/// interested, this function takes an already-built `&dyn DynEvent` and dispatches it directly.
+/// interested, this function takes an already-built event and dispatches it directly.
 ///
 /// It is intended for **interoperability with other telemetry crates** (such as `tracing` or
 /// `log` bridges) where events originate from a foreign type that cannot implement the
 /// [`Event`](crate::Event) trait, and are instead adapted via [`DynEvent`].
 ///
+/// The sink takes ownership of `event`, and the event must be `'static`,
+/// because an [`EarlySampler`](crate::sampling::EarlySampler) on the sink may
+/// keep the event and process it later. A bridge therefore copies the foreign
+/// event into an owned adaptor value before it calls this function.
+///
 /// The event still passes through the sink's normal pipeline. If the sink is a no-op or no
 /// processor is interested, the event is dropped without further work.
-pub fn emit_dyn_event(sink: &Sink, event: &dyn DynEvent) {
-    sink.emit_impl(IntermediateEvent::dynamic(event));
+pub fn emit_dyn_event<E: DynEvent + 'static>(sink: &Sink, event: E) {
+    sink.emit_dyn(event);
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -178,7 +183,7 @@ mod tests {
             SimpleClock::new_frozen(),
         );
 
-        emit_dyn_event(&sink, &Bridged);
+        emit_dyn_event(&sink, Bridged);
 
         assert_eq!(processor.seen.load(Ordering::Relaxed), 1);
     }

@@ -5,10 +5,15 @@
 //! processors are running* from re-entering the pipeline on the current
 //! thread.
 //!
-//! The guard covers processor dispatch only. Building an event value is
-//! ordinary user code - a field initializer may call a helper that emits
-//! telemetry of its own - so the guard is taken after the event has been
-//! constructed and only for the dispatch itself.
+//! The guard covers the sampling decision and the processor dispatch. Building
+//! an event value is ordinary user code - a field initializer may call a
+//! helper that emits telemetry of its own - so the guard is taken after the
+//! event has been constructed.
+//!
+//! An [`EarlySampler`](crate::sampling::EarlySampler) is inside the guard
+//! because it owns the events it receives: a sampler called for an emission
+//! that no processor can receive would release the events it holds into a
+//! dispatch that this thread must skip, and those events would be lost.
 //!
 //! # Scope: thread-wide, not per-sink
 //!

@@ -36,10 +36,10 @@ pub trait EventProcessor: Send + Sync {
     /// `description` and on state that changes at most once, such as a
     /// `OnceLock` filled during initialization. A decision that applies to
     /// one processor and can change for each delivery belongs in
-    /// [`process()`](Self::process). A whole-event decision that must occur
-    /// before typed construction belongs in an
-    /// [`EarlySampler`](crate::sampling::EarlySampler) attached to a
-    /// non-composite [`Sink`](crate::Sink).
+    /// [`process()`](Self::process). A whole-event decision that applies to
+    /// every processor on the sink, and that may depend on the event values,
+    /// belongs in an [`EarlySampler`](crate::sampling::EarlySampler) attached
+    /// to a non-composite [`Sink`](crate::Sink).
     ///
     /// It is both the lazy-construction gate and the per-processor routing
     /// decision: if **all** processors return `false` the event closure is

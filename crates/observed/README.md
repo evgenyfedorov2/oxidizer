@@ -25,8 +25,9 @@ The `observed` crate provides a unified telemetry API that:
 * Provides **per-field routing** - one event struct can produce logs and metrics with
   independent field subsets per signal
 * Supports **early sampling** - an [`EarlySampler`][__link2]
-  can reject an event before construction when code emits directly through
-  a non-composite sink
+  owns each event that code emits directly through a non-composite sink and
+  returns the events to process now, so it can drop an event, process it, or
+  keep it and process it later
 * Integrates with **OpenTelemetry** through pluggable [`EventProcessor`][__link3] implementations
 
 ## Quick Start
@@ -157,7 +158,7 @@ collects all visible entries and passes them to processors along with the event.
 This crate was developed as part of <a href="https://github.com/microsoft/oxidizer">The Oxidizer Project</a>. Browse this crate's <a href="https://github.com/microsoft/oxidizer/tree/main/crates/observed">source code</a>.
 </sub>
 
- [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb11VxC_uAPOQbtUn4Wx2-BfAbid3Nt1Y27Pobprn8Z6FjFy9hYvRhcoQb0Yw1Novny20bTEyomC1UQZQbUncmkEFh9cYbQVag0f7ja_hhZIKCbGRhdGFfcHJpdmFjeWYwLjEyLjSCaG9ic2VydmVkZjAuMjQuMA
+ [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb11VxC_uAPOQbtUn4Wx2-BfAbid3Nt1Y27Pobprn8Z6FjFy9hYvRhcoQbFf_iH23giqIbUx0O3Coc0f8b24dEMxmFcxgbd4MTPDsMZehhZIKCbGRhdGFfcHJpdmFjeWYwLjEyLjSCaG9ic2VydmVkZjAuMjQuMA
  [__link0]: `emit!`
  [__link1]: https://docs.rs/data_privacy/0.12.4/data_privacy/?search=RedactionEngine
  [__link10]: https://docs.rs/observed/0.24.0/observed/?search=context::Transfer::with_enrichment_for

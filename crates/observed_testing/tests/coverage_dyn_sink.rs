@@ -145,7 +145,7 @@ fn dyn_event_dispatch_reads_every_accessor() {
         tick::SimpleClock::new_frozen(),
     );
 
-    emit_dyn_event(&sink, &DynProbe);
+    emit_dyn_event(&sink, DynProbe);
 
     assert!(saw.load(Ordering::SeqCst), "processor should have seen the event");
     let captured = mock.single_event();
@@ -160,7 +160,7 @@ fn dyn_event_with_log_signal_reaches_logs_only_processor() {
     let logs_only = MockProcessor::with_filter(EventDescription::is_log);
     let sink = Sink::new("dyn_logs_only", vec![Arc::new(logs_only.clone())], tick::SimpleClock::new_frozen());
 
-    emit_dyn_event(&sink, &DynProbe);
+    emit_dyn_event(&sink, DynProbe);
 
     let captured = logs_only.single_event();
     assert_eq!(captured.name(), "dyn.probe");
@@ -217,7 +217,7 @@ fn a_dyn_event_without_a_log_signal_has_no_severity_and_never_reaches_logs() {
     let logs_only = MockProcessor::with_filter(EventDescription::is_log);
     let sink = Sink::new("dyn_undeclared", vec![Arc::new(logs_only.clone())], tick::SimpleClock::new_frozen());
 
-    emit_dyn_event(&sink, &UndeclaredProbe);
+    emit_dyn_event(&sink, UndeclaredProbe);
 
     assert!(logs_only.events().is_empty());
 }
@@ -288,7 +288,7 @@ fn dyn_event_body_bypasses_redaction_while_fields_do_not() {
     );
     let sink = Sink::new("dyn_redaction", vec![Arc::new(erasing.clone())], tick::SimpleClock::new_frozen());
 
-    emit_dyn_event(&sink, &FieldProbe);
+    emit_dyn_event(&sink, FieldProbe);
 
     // The classified field went through the engine and was erased; the body did
     // not - adaptors own its sanitization.

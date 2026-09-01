@@ -52,8 +52,9 @@ fn main() {
     );
 
     emit!(sink, HttpRequest { status: 200 });
-    let msg = String::from("hello");
-    emit!(sink, BorrowedEvent { message: &msg });
+    // The sink owns each event it emits, so a borrowing event only emits when
+    // the borrow is `'static` - here a string literal.
+    emit!(sink, BorrowedEvent { message: "hello" });
     emit!(sink, GenericEvent { value: 42i64 });
     emit!(
         sink,
@@ -105,7 +106,8 @@ struct HttpRequest {
     status: i64,
 }
 
-/// Struct with a lifetime parameter
+/// Struct with a lifetime parameter. Emission requires a `'static` borrow,
+/// because the sink takes ownership of the event value.
 #[event("borrowed.message")]
 #[info]
 struct BorrowedEvent<'a> {

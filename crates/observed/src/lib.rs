@@ -22,8 +22,9 @@
 //! - Provides **per-field routing** - one event struct can produce logs and metrics with
 //!   independent field subsets per signal
 //! - Supports **early sampling** - an [`EarlySampler`](sampling::EarlySampler)
-//!   can reject an event before construction when code emits directly through
-//!   a non-composite sink
+//!   owns each event that code emits directly through a non-composite sink and
+//!   returns the events to process now, so it can drop an event, process it, or
+//!   keep it and process it later
 //! - Integrates with **OpenTelemetry** through pluggable [`EventProcessor`](processing::EventProcessor) implementations
 //!
 //! # Quick Start

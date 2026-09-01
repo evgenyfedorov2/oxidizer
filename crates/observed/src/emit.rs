@@ -23,6 +23,14 @@
 /// package name), so it stays stable regardless of the module the `emit!` call
 /// is nested in.
 ///
+/// # The event must be `'static`
+///
+/// The sink takes ownership of the event value, and an
+/// [`EarlySampler`](crate::sampling::EarlySampler) on the sink may keep that
+/// value and process it after this call returns. An event type that borrows
+/// data therefore only emits when the borrow is `'static`; give the event an
+/// owned field instead.
+///
 /// # What emitting costs
 ///
 /// The event expression is a closure, so it is evaluated only if at least one of

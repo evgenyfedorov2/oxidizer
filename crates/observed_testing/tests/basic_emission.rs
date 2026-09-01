@@ -9,6 +9,8 @@
 //! - Source location capture
 //! - Zero-cost when inactive (noop sink)
 
+use std::sync::LazyLock;
+
 use observed::{Severity, Sink, SinkId, emit, event};
 use observed_testing::events::ProbeEvent;
 use observed_testing::types::{PiiString, PublicBool, PublicI64, PublicString};
@@ -284,15 +286,18 @@ fn borrowed_classified_fields() {
         count: i64,
     }
 
+    // The sink owns each event it emits, so a borrowing event only emits when
+    // the borrow is `'static`.
+    static NAME: LazyLock<PiiString> = LazyLock::new(|| PiiString("alice".into()));
+    static LABEL: LazyLock<PublicString> = LazyLock::new(|| PublicString("click".into()));
+
     let (sink, processor) = test_emitter(TEST_ID);
 
-    let name = PiiString("alice".into());
-    let label = PublicString("click".into());
     emit!(
         sink,
         UserAction {
-            name: &name,
-            label: &label,
+            name: &NAME,
+            label: &LABEL,
             count: 3,
         }
     );

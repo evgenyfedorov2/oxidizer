@@ -1,52 +1,48 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Demonstrates an early sampler that can reject an entire event before its
-//! typed value is constructed.
+//! Demonstrates an early sampler that owns every event it receives.
 //!
-//! This example attaches one [`EarlySampler`] to a sink with a log processor
-//! and a metric processor. It then emits events that the sampler drops or
-//! continues:
+//! The sampler gets one constructed event per emission and returns the events
+//! the sink processes now. This example attaches one [`EarlySampler`] to a
+//! sink with a log processor and a metric processor, and emits four events:
 //!
-//! | Event | Decision | What to notice |
-//! |-------|----------|-----------------|
-//! | `noisy.request` | `Drop` | its field constructor never prints - the typed value is never built |
-//! | `normal.request` | `Continue` | reaches the log processor |
-//! | `queue.depth` (metric-only) | `Drop` | the *whole event* is dropped - the metric processor never sees it either |
-//! | `active.workers` (metric-only) | `Continue` | the metric processor prints it, proving the dropped metric had a live route |
+//! | Event | What the sampler returns | What to notice |
+//! |-------|--------------------------|-----------------|
+//! | `login.attempt` (first) | nothing | the sampler keeps the event, so no processor sees it yet |
+//! | `login.attempt` (second) | the kept event, then the new one | the kept event still reports its own field value and its own timestamp |
+//! | `queue.depth` (metric-only) | nothing, and the event is dropped | the *whole event* is discarded - the metric processor never sees it |
+//! | `active.workers` (metric-only) | the event | the metric processor prints it, proving the dropped metric had a live route |
 //!
 //! Run with:
 //! ```sh
 //! cargo run -p observed --example early_sampling
 //! ```
 
+use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use observed::metadata::EventDescription;
 use observed::processing::{EventProcessor, EventView};
-use observed::sampling::{EarlySampler, EventMetadata, SamplingDecision};
-use observed::{Sink, emit, event};
+use observed::sampling::{EarlySampler, EventMetadata};
+use observed::{Sink, Value, emit, event};
 
-/// A log-producing event. Its `status` field is computed by
-/// [`constructing_noisy_status`]. The function prints when it runs, so the
-/// output shows if `Drop` prevented typed construction.
-#[event("noisy.request")]
-#[info("A noisy request the sampler always drops")]
-struct NoisyRequest {
+#[path = "support/redaction.rs"]
+mod redaction;
+
+/// A log-producing event. The sampler keeps the first one it sees and releases
+/// it on the next call, so the output shows whether a kept event still reports
+/// its own `attempt` value.
+#[event("login.attempt")]
+#[info("A login attempt")]
+struct LoginAttempt {
     #[unredacted]
-    status: i64,
+    attempt: i64,
 }
 
-/// A log-producing event the sampler lets through unchanged.
-#[event("normal.request")]
-#[info("An ordinary request")]
-struct NormalRequest {
-    #[unredacted]
-    status: i64,
-}
-
-/// A metric-only event that the sampler drops. No processor receives it
-/// because `Drop` occurs before event construction.
+/// A metric-only event that the sampler drops. No processor receives it,
+/// because the sampler returns no event at all for it.
 #[event("queue.depth")]
 #[gauge(depth, name = "queue.depth")]
 struct QueueDepth {
@@ -62,30 +58,64 @@ struct ActiveWorkers {
     count: i64,
 }
 
-/// Computes `NoisyRequest::status`.
+/// Keeps the first `login.attempt` and releases it together with the second
+/// one. Drops `queue.depth`. Processes every other event at once.
 ///
-/// If this function prints, `SamplingDecision::Drop` did not stop typed
-/// event construction.
-fn constructing_noisy_status() -> i64 {
-    println!("  (constructing NoisyRequest - this line must NOT print, since the sampler drops it before construction)");
-    7
+/// Only a later `sample` call releases a kept event, so this example emits a
+/// second `login.attempt` to release the first one.
+#[derive(Default)]
+struct DemoSampler {
+    held: Mutex<Option<EventMetadata>>,
 }
 
-/// Drops `noisy.request` and `queue.depth`. Continues all other events.
-struct DemoSampler;
-
 impl EarlySampler for DemoSampler {
-    fn sample(&self, event: &EventMetadata<'_>) -> SamplingDecision {
-        match event.description().name() {
-            "noisy.request" | "queue.depth" => SamplingDecision::Drop,
-            _ => SamplingDecision::Continue,
+    fn sample(&self, event: EventMetadata) -> Vec<EventMetadata> {
+        match event.view().name() {
+            // Drop the event: return nothing and let the value go out of scope.
+            "queue.depth" => Vec::new(),
+            "login.attempt" => {
+                let mut held = self.held.lock().expect("lock is not poisoned");
+                let Some(first) = held.take() else {
+                    // Keep the first event: return nothing and store the value.
+                    *held = Some(event);
+                    return Vec::new();
+                };
+                // Release the kept event first, then the current one, so the
+                // processors see them in emission order.
+                vec![first, event]
+            }
+            _ => vec![event],
         }
     }
 }
 
-/// Records every log-producing event it receives.
+/// Records the name, the `attempt` field, and the timestamp of every
+/// log-producing event it receives.
 struct LogRecorder {
     lines: Arc<Mutex<Vec<String>>>,
+    start: SystemTime,
+    engine: data_privacy::RedactionEngine,
+}
+
+impl LogRecorder {
+    /// Returns the `attempt` field of the event, if it has one.
+    fn attempt(&self, event: &EventView<'_>) -> Option<Value> {
+        let mut found = None;
+        _ = event.visit_fields(&mut |descriptor, getter| {
+            if descriptor.field_name() == "attempt" {
+                found = Some(getter(&self.engine));
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        });
+        found
+    }
+
+    /// Returns the age of the event relative to the start of the example, in
+    /// whole seconds, so the printed value stays stable between runs.
+    fn age_in_seconds(&self, event: &EventView<'_>) -> u64 {
+        event.timestamp().duration_since(self.start).unwrap_or(Duration::ZERO).as_secs()
+    }
 }
 
 impl EventProcessor for LogRecorder {
@@ -94,10 +124,13 @@ impl EventProcessor for LogRecorder {
     }
 
     fn process(&self, event: &EventView<'_>) {
-        self.lines
-            .lock()
-            .expect("lock is not poisoned")
-            .push(format!("[LOG] {name}", name = event.name()));
+        let line = format!(
+            "[LOG] {name} attempt={attempt:?} age={age}s",
+            name = event.name(),
+            attempt = self.attempt(event),
+            age = self.age_in_seconds(event),
+        );
+        self.lines.lock().expect("lock is not poisoned").push(line);
     }
 
     fn flush(&self) -> Result<(), observed::FlushError> {
@@ -130,36 +163,41 @@ impl EventProcessor for MetricRecorder {
 fn main() {
     let log_lines: Arc<Mutex<Vec<String>>> = Arc::default();
     let metric_lines: Arc<Mutex<Vec<String>>> = Arc::default();
+    // A controlled clock advances only when the example asks it to, so the
+    // timestamp of the kept event is easy to tell apart from the later one.
+    let control = tick::ClockControl::new();
+    let clock = control.to_simple_clock();
 
     let sink = Sink::new(
         "early-sampling-demo",
         vec![
             Arc::new(LogRecorder {
                 lines: Arc::clone(&log_lines),
+                start: clock.system_time(),
+                engine: redaction::passthrough_redaction_engine(),
             }) as Arc<dyn EventProcessor>,
             Arc::new(MetricRecorder {
                 lines: Arc::clone(&metric_lines),
             }),
         ],
-        tick::SimpleClock::new_system(),
+        &clock,
     )
-    .with_early_sampler(Arc::new(DemoSampler));
+    .with_early_sampler(DemoSampler::default());
 
-    println!("Emitting noisy.request (dropped before construction) ...");
-    emit!(
-        sink,
-        NoisyRequest {
-            status: constructing_noisy_status(),
-        }
-    );
+    println!("Emitting login.attempt #1 (the sampler keeps it) ...");
+    emit!(sink, LoginAttempt { attempt: 1 });
 
-    println!("Emitting normal.request (continues) ...");
-    emit!(sink, NormalRequest { status: 200 });
+    // Move the clock forward, so the second event carries a later timestamp
+    // than the kept one.
+    control.advance(Duration::from_mins(1));
+
+    println!("Emitting login.attempt #2 (the sampler releases both) ...");
+    emit!(sink, LoginAttempt { attempt: 2 });
 
     println!("Emitting queue.depth (metric-only event, dropped as a whole event) ...");
     emit!(sink, QueueDepth { depth: 3 });
 
-    println!("Emitting active.workers (continued metric-only event) ...");
+    println!("Emitting active.workers (processed metric-only event) ...");
     emit!(sink, ActiveWorkers { count: 5 });
 
     println!();
@@ -175,6 +213,7 @@ fn main() {
     }
 
     println!();
-    println!("Notice: `noisy.request` and `queue.depth` never appear above, while");
-    println!("`active.workers` proves the metric processor has a live route.");
+    println!("Notice: the kept event still reports attempt=1 and age=0s, while the");
+    println!("event that released it reports attempt=2 and age=60s. `queue.depth`");
+    println!("never appears, and `active.workers` proves the metric route is live.");
 }
