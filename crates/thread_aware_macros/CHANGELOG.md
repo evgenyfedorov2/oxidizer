@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.12.0] - 2026-09-04
+
+- ⚠️ Breaking
+
+  - generate relocation against `thread_aware` 0.12's borrowed `Thread` coordinates ([#721](https://github.com/microsoft/oxidizer/pull/721))
+
+- 🔧 Maintenance
+
+  - Now requires `0.12.0` of `thread_aware_macros_impl`
+
 ## [0.11.0] - 2026-08-27
 
 - 🔧 Maintenance

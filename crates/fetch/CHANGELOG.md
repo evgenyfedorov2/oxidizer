@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.17.0] - 2026-09-04
+
+- ⚠️ Breaking
+
+  - adopt thread_aware_core across workspace ([#721](https://github.com/microsoft/oxidizer/pull/721))
+  - Now requires `0.9.0` of `anyspawn`
+  - Now requires `0.10.0` of `bytesbuf`
+  - Now requires `0.8.0` of `fetch_hyper`
+  - Now requires `0.11.0` of `http_extensions`
+  - Now requires `0.9.0` of `seatbelt`
+  - Now requires `0.9.0` of `seatbelt_http`
+  - Now requires `0.12.0` of `thread_aware`
+  - Now requires `0.7.0` of `tick`
+
 ## [0.16.1] - 2026-08-28
 
 - 🔧 Maintenance

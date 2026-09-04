@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.0] - 2026-09-04
+
+- ⚠️ Breaking
+
+  - Now requires `0.9.0` of `anyspawn`
+  - Now requires `0.10.0` of `bytesbuf`
+  - Now requires `0.11.0` of `http_extensions`
+  - Now requires `0.9.0` of `seatbelt`
+  - Now requires `0.7.0` of `tick`
+
 ## [0.7.1] - 2026-08-28
 
 - 🔧 Maintenance

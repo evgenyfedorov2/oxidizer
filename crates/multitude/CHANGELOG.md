@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0] - 2026-09-04
+
+- ⚠️ Breaking
+
+  - Now requires `0.10.0` of `bytesbuf`
+
+- ⚡ Performance
+
+  - parallelize scheduled Miri and reduce resource outliers ([#706](https://github.com/microsoft/oxidizer/pull/706))
+
+- ✔️ Tasks
+
+  - raise MSRV to Rust 1.95 ([#716](https://github.com/microsoft/oxidizer/pull/716))
+
 ## [0.9.0] - 2026-08-27
 
 - ⚠️ Breaking
