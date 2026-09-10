@@ -148,19 +148,27 @@ guard is scoped to a single poll.
 When `emit!` fires, the sink walks its thread-local enrichment chain and
 collects all visible entries and passes them to processors along with the event.
 
+## Emission suppression
+
+Use [`processing::with_emission_suppressed`][__link14] to run synchronous code without
+dispatching its `observed` events to processors on the current thread.
+Suppression covers every sink and signal, nests with processor dispatch and
+other suppression scopes, and leaves other threads unaffected.
+
 
 <hr/>
 <sub>
 This crate was developed as part of <a href="https://github.com/microsoft/oxidizer">The Oxidizer Project</a>. Browse this crate's <a href="https://github.com/microsoft/oxidizer/tree/main/crates/observed">source code</a>.
 </sub>
 
- [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb11VxC_uAPOQbtUn4Wx2-BfAbid3Nt1Y27Pobprn8Z6FjFy9hYvRhcoQb68x7sQbVDdYbwXFbW_bB1wAb0GrV6MyUj6kbkecovaJAvyFhZIKCbGRhdGFfcHJpdmFjeWYwLjEyLjSCaG9ic2VydmVkZjAuMjUuMA
+ [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb11VxC_uAPOQbtUn4Wx2-BfAbid3Nt1Y27Pobprn8Z6FjFy9hYvRhcoQbX1woQJHU-xwblfZKCzAZGtkbhcyW0eWCa8gbzTEwl_Cm3BxhZIKCbGRhdGFfcHJpdmFjeWYwLjEyLjSCaG9ic2VydmVkZjAuMjUuMA
  [__link0]: `emit!`
  [__link1]: https://docs.rs/data_privacy/0.12.4/data_privacy/?search=RedactionEngine
  [__link10]: https://docs.rs/observed/0.25.0/observed/?search=enrichment::EnrichFutureExt::enrich
  [__link11]: https://docs.rs/observed/0.25.0/observed/?search=context::Transferred::enrich
  [__link12]: https://docs.rs/observed/0.25.0/observed/?search=context::Transfer::apply_current_thread
  [__link13]: https://docs.rs/observed/0.25.0/observed/?search=enrichment::EnrichFutureExt::attach
+ [__link14]: https://docs.rs/observed/0.25.0/observed/?search=processing::with_emission_suppressed
  [__link2]: https://docs.rs/observed/0.25.0/observed/?search=processing::EventProcessor
  [__link3]: https://docs.rs/observed/0.25.0/observed/?search=enrichment::EnrichFutureExt::enrich
  [__link4]: https://docs.rs/observed/0.25.0/observed/?search=enrichment::EnrichFnExt::enrich

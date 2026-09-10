@@ -11,3 +11,4 @@ pub use core::Sink;
 
 pub use id::SinkId;
 use recursion_guard::try_acquire_reentrancy_guard;
+pub use recursion_guard::with_emission_suppressed;

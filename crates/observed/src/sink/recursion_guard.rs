@@ -1,21 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Thread-local reentrancy guard that stops telemetry emitted *while
-//! processors are running* from re-entering the pipeline on the current
-//! thread.
+//! Shared thread-local guard for recursion protection and explicit emission
+//! suppression.
 //!
-//! The guard covers processor dispatch only. Building an event value is
-//! ordinary user code - a field initializer may call a helper that emits
-//! telemetry of its own - so the guard is taken after the event has been
-//! constructed and only for the dispatch itself.
+//! Ordinary emission acquires the guard only for processor dispatch. Building
+//! an event value is ordinary user code - a field initializer may call a helper
+//! that emits telemetry of its own - so emission takes the guard after the
+//! event has been constructed. Explicit suppression holds the same guard for
+//! the entire operation.
 //!
 //! # Scope: thread-wide, not per-sink
 //!
 //! The guard is a single un-keyed thread-local flag shared by **every**
 //! [`Sink`](crate::Sink) on the thread, not one slot per sink identity. While
-//! an event is being dispatched to processors, *any* nested `emit!` on that
-//! thread is skipped - including one targeting a completely unrelated sink.
+//! an event is being dispatched to processors or [`with_emission_suppressed`]
+//! is running, *any* nested `emit!` on that thread skips dispatch - including
+//! one targeting a completely unrelated sink.
 //!
 //! This is deliberate: nested telemetry is not a supported scenario. A
 //! processor that emits while handling an event (e.g. reporting its own
@@ -40,15 +41,51 @@ thread_local! {
     static AVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
+/// Runs `operation` with `observed` event dispatch suppressed on the current thread.
+///
+/// The operation always runs exactly once and its return value is passed through,
+/// even inside another suppression scope or an [`EventProcessor::process`](crate::processing::EventProcessor::process)
+/// call. Emissions through any [`Sink`](crate::Sink) on this thread are silently
+/// dropped before reaching `process`, regardless of signal or processor.
+/// Interest checks and event construction may still run.
+///
+/// Scopes nest with each other and with ordinary processor dispatch. The previous
+/// suppression state is restored when the operation returns or unwinds after a
+/// panic. Other threads are unaffected.
+///
+/// This scope covers synchronous execution only. Returning a future does not
+/// suppress emissions when that future is later polled.
+///
+/// # Example
+///
+/// ```
+/// use observed::processing::with_emission_suppressed;
+///
+/// let mut calls = 0;
+/// let result = with_emission_suppressed(|| {
+///     calls += 1;
+///     // Any observed emissions made here are suppressed.
+///     42
+/// });
+///
+/// assert_eq!(calls, 1);
+/// assert_eq!(result, 42);
+/// ```
+pub fn with_emission_suppressed<R>(operation: impl FnOnce() -> R) -> R {
+    let _guard = try_acquire_reentrancy_guard();
+    operation()
+}
+
 /// Attempts to acquire the current thread's reentrancy guard.
 ///
-/// Returns `Some(guard)` when no emission is in progress on this thread; the
+/// Returns `Some(guard)` when no guard is held on this thread; the
 /// slot is released when the returned guard is dropped. Returns `None` when a
-/// guard is already held, signaling a reentrant sink invocation that the
-/// caller must skip to avoid unbounded recursion.
+/// guard is already held by processor dispatch or explicit suppression.
+/// Emission skips dispatch in that case; explicit suppression still runs its
+/// operation because the outer scope owns the guard.
 ///
 /// The slot is shared across all sinks on the thread, so a `None` here means
-/// *some* emission is in progress - not necessarily one on the same sink. See
+/// *some* scope holds the guard - not necessarily one on the same sink. See
 /// the [module docs](self) for why the guard is thread-wide.
 pub(super) fn try_acquire_reentrancy_guard() -> Option<impl Drop> {
     AVAILABLE.get().then(|| {

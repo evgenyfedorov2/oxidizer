@@ -160,6 +160,13 @@
 //!
 //! When `emit!` fires, the sink walks its thread-local enrichment chain and
 //! collects all visible entries and passes them to processors along with the event.
+//!
+//! # Emission suppression
+//!
+//! Use [`processing::with_emission_suppressed`] to run synchronous code without
+//! dispatching its `observed` events to processors on the current thread.
+//! Suppression covers every sink and signal, nests with processor dispatch and
+//! other suppression scopes, and leaves other threads unaffected.
 
 // Allow `::observed::…` paths emitted by derive macros to resolve inside this crate.
 extern crate self as observed;

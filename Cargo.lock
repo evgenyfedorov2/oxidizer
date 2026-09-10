@@ -3138,6 +3138,7 @@ dependencies = [
  "alloc_tracker",
  "criterion",
  "data_privacy",
+ "mutants",
  "observed_macros",
  "ohno 0.5.0",
  "opentelemetry",

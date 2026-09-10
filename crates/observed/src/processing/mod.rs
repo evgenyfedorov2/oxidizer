@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Processing side: the contract and the view handed to event processors.
+//! Processing side: the contract, event view, and emission suppression.
 //!
-//! These types exist solely to *consume* emitted events. An [`EventView`] is
-//! built by the emission infrastructure and passed to
+//! An [`EventView`] is built by the emission infrastructure and passed to
 //! [`EventProcessor::process`]; concrete processors live in separate
-//! destination crates.
+//! destination crates. [`with_emission_suppressed`] runs synchronous code
+//! without dispatching its events to any processor on the current thread.
 
 mod event_state;
 mod event_view;
@@ -20,6 +20,7 @@ pub use processor::EventProcessor;
 
 use crate::Value;
 use crate::metadata::FieldDescriptor;
+pub use crate::sink::with_emission_suppressed;
 
 /// Getter closure passed to [`FieldVisitorFn`].
 ///
