@@ -153,7 +153,7 @@ native-tls = { version = "0.2.18", default-features = false }
 new_zealand = { version = "1.0.4", default-features = false }
 nm = { version = "0.1.21", default-features = false }
 object-pool = { version = "0.6.0", default-features = false }
-observed = { path = "crates/observed", default-features = false, version = "0.25.0" }
+observed = { path = "crates/observed", default-features = false, version = "0.25.1" }
 observed_macros = { path = "crates/observed_macros", default-features = false, version = "0.24.0" }
 observed_macros_impl = { path = "crates/observed_macros_impl", default-features = false, version = "0.24.0" }
 observed_testing = { path = "crates/observed_testing", default-features = false }

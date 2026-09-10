@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.25.1] - 2026-09-10
+
+- ✨ Features
+
+  - expose thread-wide emission suppression
+
 All notable changes to this project are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
